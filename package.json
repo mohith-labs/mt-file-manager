@@ -1,0 +1,14 @@
+{
+  "name": "mt-file-manager",
+  "version": "1.0.0",
+  "description": "MT Manager Remote File Management Server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "multer": "^1.4.5-lts.1",
+    "mime-types": "^2.1.35"
+  }
+}
