@@ -10,10 +10,112 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const FILE_ROOT = process.env.FILE_ROOT || '/data';
 const SERVER_NAME = process.env.SERVER_NAME || 'MT File Manager';
+const AUTH_USER = process.env.AUTH_USER || '';
+const AUTH_PASS = process.env.AUTH_PASS || '';
+const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
+const SESSION_MAX_AGE = parseInt(process.env.SESSION_MAX_AGE || '604800', 10); // 7 days default
 
 // Body parsers
 app.use(express.json({ limit: '50mb' }));
 app.use(express.text({ limit: '50mb', type: 'text/plain' }));
+
+// ----- Cookie parser (minimal) -----
+function parseCookies(req) {
+  const cookies = {};
+  const hdr = req.headers.cookie;
+  if (hdr) hdr.split(';').forEach(c => {
+    const [k, ...v] = c.split('=');
+    cookies[k.trim()] = decodeURIComponent(v.join('=').trim());
+  });
+  return cookies;
+}
+
+// ----- Session token helpers -----
+function createSessionToken(username) {
+  const payload = JSON.stringify({ user: username, iat: Date.now(), exp: Date.now() + SESSION_MAX_AGE * 1000 });
+  const b64 = Buffer.from(payload).toString('base64url');
+  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(b64).digest('base64url');
+  return b64 + '.' + sig;
+}
+
+function verifySessionToken(token) {
+  if (!token) return null;
+  const parts = token.split('.');
+  if (parts.length !== 2) return null;
+  const [b64, sig] = parts;
+  const expected = crypto.createHmac('sha256', SESSION_SECRET).update(b64).digest('base64url');
+  if (!crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  try {
+    const payload = JSON.parse(Buffer.from(b64, 'base64url').toString());
+    if (payload.exp && payload.exp < Date.now()) return null;
+    return payload;
+  } catch { return null; }
+}
+
+const authEnabled = !!(AUTH_USER && AUTH_PASS);
+
+// ----- Auth middleware -----
+function requireAuth(req, res, next) {
+  if (!authEnabled) return next();
+
+  // Check Authorization header (Bearer token)
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const session = verifySessionToken(authHeader.slice(7));
+    if (session) { req.authUser = session.user; return next(); }
+  }
+
+  // Check cookie
+  const cookies = parseCookies(req);
+  if (cookies._fm_session) {
+    const session = verifySessionToken(cookies._fm_session);
+    if (session) { req.authUser = session.user; return next(); }
+  }
+
+  return res.status(401).json({ error: 'Authentication required' });
+}
+
+// ----- Login / Logout endpoints (before auth middleware) -----
+app.post('/api/auth/login', (req, res) => {
+  if (!authEnabled) return res.json({ success: true, token: '' });
+
+  const { username, password } = req.body || {};
+  if (username === AUTH_USER && password === AUTH_PASS) {
+    const token = createSessionToken(username);
+    res.cookie('_fm_session', token, {
+      httpOnly: true,
+      secure: req.secure || req.headers['x-forwarded-proto'] === 'https',
+      sameSite: 'Strict',
+      maxAge: SESSION_MAX_AGE * 1000,
+      path: '/',
+    });
+    return res.json({ success: true, token });
+  }
+
+  return res.status(401).json({ error: 'Invalid username or password' });
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  res.clearCookie('_fm_session', { path: '/' });
+  res.json({ success: true });
+});
+
+app.get('/api/auth/check', (req, res) => {
+  if (!authEnabled) return res.json({ authenticated: true, authRequired: false });
+
+  const cookies = parseCookies(req);
+  const token = cookies._fm_session ||
+    (req.headers.authorization?.startsWith('Bearer ') ? req.headers.authorization.slice(7) : null);
+  const session = verifySessionToken(token);
+  return res.json({ authenticated: !!session, authRequired: true, user: session?.user || null });
+});
+
+// Apply auth middleware to all /api routes EXCEPT auth endpoints above
+app.use('/api', (req, res, next) => {
+  // Skip auth for login/logout/check
+  if (req.path === '/auth/login' || req.path === '/auth/logout' || req.path === '/auth/check') return next();
+  requireAuth(req, res, next);
+});
 
 // ----- Helpers -----
 
@@ -621,4 +723,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`MT File Manager running on port ${PORT}`);
   console.log(`File root: ${FILE_ROOT}`);
   console.log(`Server name: ${SERVER_NAME}`);
+  console.log(`Authentication: ${authEnabled ? 'ENABLED (user: ' + AUTH_USER + ')' : 'DISABLED'}`);
 });

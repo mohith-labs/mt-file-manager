@@ -170,6 +170,30 @@ input[type="checkbox"]{width:15px;height:15px;accent-color:var(--accent);cursor:
 /* Drag-over highlight */
 #file-list-wrap.drag-over{background:var(--accent-dim)}
 
+/* Login screen */
+#login-screen{position:fixed;inset:0;z-index:5000;background:var(--bg);display:flex;
+  align-items:center;justify-content:center;flex-direction:column}
+#login-screen.hidden{display:none}
+.login-card{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius-lg);
+  padding:40px;width:360px;max-width:90vw;box-shadow:var(--shadow)}
+.login-card h1{font-size:20px;font-weight:600;margin-bottom:4px;text-align:center}
+.login-card .login-subtitle{color:var(--text-muted);font-size:13px;text-align:center;margin-bottom:28px}
+.login-card .login-field{margin-bottom:16px}
+.login-card .login-field label{display:block;font-size:12px;font-weight:500;color:var(--text-secondary);
+  margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+.login-card .login-field input{width:100%;padding:10px 12px;background:var(--bg);border:1px solid var(--border);
+  border-radius:var(--radius);color:var(--text);font-size:14px;transition:border var(--transition)}
+.login-card .login-field input:focus{border-color:var(--accent);outline:none}
+.login-card .login-error{color:var(--danger);font-size:13px;margin-bottom:12px;display:none;text-align:center}
+.login-card .login-btn{width:100%;padding:10px;background:var(--accent);color:#fff;border:none;
+  border-radius:var(--radius);font-size:14px;font-weight:500;cursor:pointer;transition:background var(--transition)}
+.login-card .login-btn:hover{background:var(--accent-hover)}
+.login-card .login-btn:disabled{opacity:.5;cursor:not-allowed}
+.login-icon{font-size:40px;text-align:center;margin-bottom:16px}
+
+/* Logout button in toolbar */
+#btn-logout{margin-left:4px}
+
 /* Status bar */
 #status-bar{display:flex;align-items:center;padding:0 12px;height:26px;background:var(--bg-secondary);
   border-top:1px solid var(--border);flex-shrink:0;font-size:12px;color:var(--text-muted);gap:16px}
@@ -191,7 +215,29 @@ input[type="checkbox"]{width:15px;height:15px;accent-color:var(--accent);cursor:
 </head>
 <body>
 <div id="loading-bar" style="width:0"></div>
-<div id="app">
+
+<!-- Login screen -->
+<div id="login-screen">
+  <div class="login-card">
+    <div class="login-icon">🔒</div>
+    <h1 id="login-title">File Manager</h1>
+    <p class="login-subtitle">Sign in to continue</p>
+    <form id="login-form" onsubmit="FM.handleLogin(event)">
+      <div class="login-field">
+        <label for="login-user">Username</label>
+        <input type="text" id="login-user" autocomplete="username" autocapitalize="off" required>
+      </div>
+      <div class="login-field">
+        <label for="login-pass">Password</label>
+        <input type="password" id="login-pass" autocomplete="current-password" required>
+      </div>
+      <div class="login-error" id="login-error"></div>
+      <button type="submit" class="login-btn" id="login-btn">Sign In</button>
+    </form>
+  </div>
+</div>
+
+<div id="app" style="display:none">
   <!-- Toolbar -->
   <div id="toolbar">
     <button onclick="FM.navigateBack()" title="Back (Alt+←)">
@@ -249,6 +295,10 @@ input[type="checkbox"]{width:15px;height:15px;accent-color:var(--accent);cursor:
       <svg viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 7a4.499 4.499 0 11-8.998 0A4.499 4.499 0 0111.5 7zm-.82 4.74a6 6 0 111.06-1.06l3.04 3.04a.75.75 0 11-1.06 1.06l-3.04-3.04z"/></svg>
       <input type="text" id="search-input" placeholder="Filter…" oninput="FM.filterFiles()">
     </div>
+    <button onclick="FM.logout()" id="btn-logout" title="Logout" style="display:none">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M2 2.75C2 1.784 2.784 1 3.75 1h2.5a.75.75 0 010 1.5h-2.5a.25.25 0 00-.25.25v10.5c0 .138.112.25.25.25h2.5a.75.75 0 010 1.5h-2.5A1.75 1.75 0 012 13.25V2.75z"/><path d="M10.22 4.47a.75.75 0 011.06 0l3.25 3.25a.75.75 0 010 1.06l-3.25 3.25a.75.75 0 11-1.06-1.06l1.97-1.97H6.75a.75.75 0 010-1.5h5.44l-1.97-1.97a.75.75 0 010-1.06z"/></svg>
+      <span class="btn-label">Logout</span>
+    </button>
   </div>
 
   <!-- Breadcrumb -->
@@ -332,6 +382,10 @@ const FM = (() => {
   // ─── API helper ───
   async function api(url, opts = {}) {
     const r = await fetch(url, opts);
+    if (r.status === 401) {
+      showLoginScreen();
+      throw new Error('Authentication required');
+    }
     if (!r.ok) {
       let msg;
       try { const j = await r.json(); msg = j.error || j.message; } catch { msg = await r.text(); }
@@ -339,6 +393,85 @@ const FM = (() => {
     }
     const ct = r.headers.get('content-type') || '';
     return ct.includes('json') ? r.json() : r.text();
+  }
+
+  // ─── Auth ───
+  let authRequired = false;
+
+  function showLoginScreen() {
+    $('login-screen').classList.remove('hidden');
+    $('app').style.display = 'none';
+    $('login-user').focus();
+  }
+
+  function showApp() {
+    $('login-screen').classList.add('hidden');
+    $('app').style.display = '';
+    if (authRequired) $('btn-logout').style.display = '';
+  }
+
+  async function checkAuth() {
+    try {
+      const resp = await fetch('/api/auth/check');
+      const data = await resp.json();
+      authRequired = data.authRequired;
+      if (!authRequired || data.authenticated) {
+        showApp();
+        return true;
+      }
+      showLoginScreen();
+      return false;
+    } catch {
+      // If check fails, assume no auth needed
+      showApp();
+      return true;
+    }
+  }
+
+  async function handleLogin(e) {
+    e.preventDefault();
+    const btn = $('login-btn');
+    const errEl = $('login-error');
+    btn.disabled = true;
+    errEl.style.display = 'none';
+
+    const username = $('login-user').value.trim();
+    const password = $('login-pass').value;
+
+    try {
+      const resp = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        showApp();
+        $('login-pass').value = '';
+        errEl.style.display = 'none';
+        await navigateTo('/');
+      } else {
+        errEl.textContent = data.error || 'Login failed';
+        errEl.style.display = 'block';
+        $('login-pass').value = '';
+        $('login-pass').focus();
+      }
+    } catch (err) {
+      errEl.textContent = 'Connection error';
+      errEl.style.display = 'block';
+    }
+    btn.disabled = false;
+  }
+
+  async function logout() {
+    try { await fetch('/api/auth/logout', { method: 'POST' }); } catch {}
+    showLoginScreen();
+    $('login-user').value = '';
+    $('login-pass').value = '';
+    allFiles = [];
+    filteredFiles = [];
+    selectedPaths.clear();
+    renderFileList();
   }
 
   // ─── Escaping ───
@@ -925,10 +1058,22 @@ const FM = (() => {
     _setupDragDrop();
     _setupClickHandlers();
 
+    // Fetch server name for login screen title (doesn't require auth)
+    try {
+      const cfgResp = await fetch('/api/auth/check');
+      const cfgData = await cfgResp.json();
+      authRequired = cfgData.authRequired;
+    } catch {}
+
+    // Check auth - if not authenticated, show login and stop
+    const authed = await checkAuth();
+    if (!authed) return;
+
     try {
       const cfg = await api('/api/web-config');
       serverName = cfg.name || 'File Manager';
       document.title = serverName;
+      $('login-title').textContent = serverName;
     } catch {}
 
     try {
@@ -951,7 +1096,7 @@ const FM = (() => {
     downloadFile, downloadSelected, copySelected, cutSelected, pasteFiles,
     triggerUpload, handleFileUpload, showProperties,
     openTextViewer, downloadTextFile, closeTextViewer,
-    closeModal, hideContextMenu,
+    closeModal, hideContextMenu, handleLogin, logout,
     _rowClick, _rowDbl, _rowCtx, _renameFile, _doRename, _createItem, _doDelete,
     toast
   };
